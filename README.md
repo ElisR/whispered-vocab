@@ -27,6 +27,8 @@ The files from this audio CD are logically named as `"xy.z Section Title.mp3"`, 
 I also use this naming to structure my Anki decks.
 All the code is currently contained in a Jupyter notebook, so you will find no benefit from this unless you know Python.
 
+**Warning:** Running this Notebook will create hundreds of `mp3` files that will later get saved into the Anki package.
+
 ### Future
 
 This repository allowed me to digitise the contents of this particular book, and might contain some useful code for others in a similar situation.
