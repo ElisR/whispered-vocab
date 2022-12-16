@@ -4,7 +4,7 @@ Using [Whisper](https://github.com/openai/whisper) by OpenAI to convert an audio
 This was a weekend project to solve a practical problem.
 
 [Mastering French Vocabulary](https://www.goodreads.com/book/show/14610665-mastering-french-vocabulary-with-online-audio) is an excellent curated list of French vocabulary.
-This sets itself apart from most vocabulary lists publicly available on Anki because words are nicely grouped according to themes instead of the common ordering by frequency.[^1]
+This sets itself apart from most vocabulary lists publicly available on Anki because words are nicely grouped according to themes instead of the common ordering by frequency.<sup>[1](#footnote)</sup>
 
 Since it is a paper book, this list is not digitised.
 This prevents me from automatically loading this vocabulary list into spaced repetition software, which I typically use to learn new vocabulary.
@@ -26,4 +26,4 @@ This repository allowed me to digitise the contents of this particular book, and
 It may also be a way around sharing curated flashcard lists of vocabulary without running into copyright issues (provided one can legally access the audio CD) which prevents me from sharing the final flashcard list.
 My ultimate aim would be to package this up to be flexible enough to convert any vocabulary CDs into Anki flashcards.
 
-[^1] The motivation provided in the book for this is that words learnt at the same time as other linked words form stronger connections. This further allows one to choose word groups according to our interests. Also, common words naturally assert themselves by appearing more frequently in text and speech, so there is no need to further impose this statistical artefact in the way we pick up new vocabulary. Frequency-ordered vocabulary lists have the advantage of being easily produced on-masse, however, requiring no curation.
+<a name="footnote">1</a>: Footnote content goes hereThe motivation provided in the book for this is that words learnt at the same time as other linked words form stronger connections. This further allows one to choose word groups according to our interests. Also, common words naturally assert themselves by appearing more frequently in text and speech, so there is no need to further impose this statistical artefact in the way we pick up new vocabulary. Frequency-ordered vocabulary lists have the advantage of being easily produced on-masse, however, requiring no curation.
