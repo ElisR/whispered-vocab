@@ -1,4 +1,8 @@
 *.mp3
 *.icloud
+/vocab_lists/
+/prototypes/
+.vscode
+.DS_Store
 
 api_key.txt
