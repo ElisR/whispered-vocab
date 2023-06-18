@@ -18,7 +18,7 @@ PROMPT_START = (
 
 PROMPT_END = (
     """When a masculine and feminine noun follow each other, they should be merged into one entry. Similarly, if a plural noun follows its singular version, they should both appear side-by-side in the same entry. All strings in the CSV should be escaped with `'`. Capitalise all proper nouns and valid grammatical sentences/questions, but otherwise leave the entries lowercase. For the valid grammatical sentences/questions, also punctuate them correctly.\n\n"""
-    """An example format is:
+    """An example output for the input "Le nom. Le nom de famille. Le prénom. S'appeler." would be:
     ```
     "French","English"
     "le nom", "the name"
@@ -41,6 +41,7 @@ def get_prompt(transcription: str):
     return PROMPT_START + "\n\n" + transcription + "\n\n" + PROMPT_END
 
 
+# TODO Add option to run locally with GPU.
 def transcribe_audio(audio_path: Path,
                      language: str = "fr",
                      ):
@@ -140,7 +141,7 @@ class VocabularyList:
         self.strip_numbers = strip_numbers
         self.model = model
         if model not in ["gpt-3.5-turbo", "gpt-4"]:
-            self.model = "gpt-3.5-turbo"
+            self.model = DEFAULT_MODEL
             logging.warning("Model %s not recognised. Using default model %s.", model, self.model)
 
     def create_transcriptions(self,
@@ -176,6 +177,8 @@ class VocabularyList:
                            language: str = "fr",
                            ) -> None:
         """Given an audio file, create a vocabulary list.
+
+        TODO Add an option to use transcription directly. Split up this function.
 
         Args:
             audio_path: Path to audio file or directory containing audio files.
