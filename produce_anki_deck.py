@@ -8,6 +8,7 @@ import re
 import json
 import random
 import logging
+from tqdm import tqdm
 
 import pandas as pd
 
@@ -46,18 +47,20 @@ def _generate_model_seed(model_name: str):
     return random.randrange(1 << 30, 1 << 31)
 
 
-def get_card_field_templates(language: str):
+def get_card_field_templates(language: str, use_audio: bool):
     """Given a language, return the card format."""
     card_fields = [
         {'name': REFERENCE_LANGUAGE},
         {'name': language},
-        {'name': 'Audio'}
     ]
+    if use_audio:
+        card_fields.append({'name': 'Audio'})
+
     card_template = [
         {
             'name': 'Card',
             'qfmt': '{{' + REFERENCE_LANGUAGE + '}}<br><br>{{type:' + language + '}}',
-            'afmt': '{{FrontSide}}<hr id="answer">{{' + language + '}}<br>{{Audio}}',
+            'afmt': '{{FrontSide}}<hr id="answer">{{' + language + '}}' + ('<br>{{Audio}}' if use_audio else ''),
         },
     ]
     return card_fields, card_template
@@ -110,7 +113,7 @@ def read_chapter_titles(chapter: Path) -> dict[int, str]:
         Dictionary of chapter titles.
     """
     chapter_df = pd.read_csv(chapter)
-    chapter_titles = dict(zip(chapter_df["Chapter"], chapter_df["Title"]))
+    chapter_titles = dict(zip(chapter_df["Chapter"].astype(int), chapter_df["Title"]))
     return chapter_titles
 
 
@@ -147,15 +150,16 @@ class AnkiDeck:
         create_anki_deck: Create an Anki deck from a vocabulary list.
     """
 
-    def __init__(self, language: str = "fr"):
+    def __init__(self, language: str = "fr", use_audio: bool = True):
         """Initialise AnkiDeck class."""
         self.language = language
         self.language_name = get_nice_language_name(language)
-        self.card_fields, self.card_template = get_card_field_templates(language)
+        self.use_audio = use_audio
+        self.card_fields, self.card_template = get_card_field_templates(language, self.use_audio)
         self.card_css = CARD_CSS
 
         # Some metadata for the model
-        self.model_name = f"{REFERENCE_LANGUAGE}/{self.language_name} with Audio"
+        self.model_name = f"{REFERENCE_LANGUAGE}/{self.language_name}" + (" with Audio" if self.use_audio else "")
         self.seed = _generate_model_seed(self.model_name)
         self.package_name = f"Testing Mastering {self.language_name} Vocabulary"
 
@@ -179,11 +183,16 @@ class AnkiDeck:
 
         # Should only have been passed valid CSV file
         vocab_df = load_vocab(vocab_list, self.language_name)
-        for i, row in vocab_df.iterrows():
+        for _, row in vocab_df.iterrows():
+            # Find fields
+            fields = [row[REFERENCE_LANGUAGE], row[self.language_name]]
+            if self.use_audio:
+                fields.append(f"[sound:{row['Audio']}]")
+
             # Create note
             note = genanki.Note(
                 model=self.model,
-                fields=[row[REFERENCE_LANGUAGE], row[self.language_name], f"[sound:{row['Audio']}]"],
+                fields=fields,
             )
             # Add note to deck
             deck.add_note(note)
@@ -212,7 +221,7 @@ class AnkiDeck:
 
         deck_list = []
         # Create deck for each vocabulary list
-        for i, vocab_list_path in enumerate(vocab_lists_all):
+        for i, vocab_list_path in tqdm(enumerate(vocab_lists_all)):
             # Create a good name
             chap_num = int(re.findall(r"\d+", vocab_list_path.stem)[0])
             chap_title = chap_num if not chapter_titles else chapter_titles[chap_num]
@@ -233,7 +242,7 @@ class AnkiDeck:
             media: List of media files to include in package.
         """
         package = genanki.Package(deck_list)
-        if media is not None:
+        if media is not None and self.use_audio:
             package.media_files = media
         out_dir.mkdir(parents=True, exist_ok=True)
         package.write_to_file(out_dir / (self.package_name + ".apkg"))
