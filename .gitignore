@@ -1,6 +1,7 @@
 *.mp3
 *.icloud
 /vocab_lists/
+/checkpoints/
 /prototypes/
 .vscode
 .DS_Store
