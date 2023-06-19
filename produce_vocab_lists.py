@@ -4,10 +4,13 @@ from pathlib import Path
 import logging
 import fire
 import openai
+import whisper
+import torch
 
 logging.basicConfig(level=logging.INFO)
 
 DEFAULT_MODEL = "gpt-3.5-turbo"
+DEFAULT_WHISPER_MODEL = "medium"
 
 # TODO Change the prompt depending on the language.
 # Could even do this with the API itself
@@ -41,23 +44,6 @@ def get_prompt(transcription: str):
     return PROMPT_START + "\n\n" + transcription + "\n\n" + PROMPT_END
 
 
-# TODO Add option to run locally with GPU.
-def transcribe_audio(audio_path: Path,
-                     language: str = "fr",
-                     ):
-    """Given an audio file, return a transcription."""
-    with open(audio_path, "rb") as file:
-        # This is where an API call happens
-        transcription = openai.Audio.transcribe(
-                                        file=file,
-                                        language=language,
-                                        model="whisper-1",
-                                        prompt=TRANSCRIPTION_PROMPT
-                                )
-        logging.info("Made OpenAI Whisper API call with audio_file %s", audio_path.name)
-    return transcription["text"]
-
-
 def create_vocab_list(transcription: str,
                       model: str,
                       section_name: str = "") -> str:
@@ -81,7 +67,7 @@ def create_vocab_list(transcription: str,
 
 
 def get_audio_list(audio_path: Path) -> list[Path]:
-    """Return list of all audio files in a given path.
+    """Return list of all mp3 audio files in a given path.
 
     Args:
         audio_path: Path to audio file or directory containing audio files.
@@ -123,6 +109,8 @@ class VocabularyList:
                  api_key_path: Path = None,
                  api_key: str = None,
                  strip_numbers: bool = False,
+                 language: str = "fr",
+                 local: bool = False,
                  model: str = "gpt-3.5-turbo") -> None:
         """Initialise VocabularyList class.
 
@@ -130,6 +118,8 @@ class VocabularyList:
             api_key_path: Path to OpenAI API key.
             api_key: OpenAI API key.
             strip_numbers: Whether to strip leading numbers from section names.
+            language: ISO code of target language.
+            local: Whether to use local instance of Whisper instead of API.
             model: OpenAI model to use.
         """
         # Set API key
@@ -144,10 +134,43 @@ class VocabularyList:
             self.model = DEFAULT_MODEL
             logging.warning("Model %s not recognised. Using default model %s.", model, self.model)
 
+        self.language = language
+        self.local = local
+        if local:
+            # TODO Add MPS support and selectable device
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            if self.device == "cuda" and torch.cuda.mem_get_info()[0] > 10e9:
+                # Use large model if GPU has enough memory
+                self.whisper_model_name = "large"
+            else:
+                self.whisper_model_name = DEFAULT_WHISPER_MODEL
+            self.whisper_model = whisper.load_model(self.whisper_model_name, device=self.device)
+        else:
+            self.whisper_model_name = "whisper-1"
+            self.whisper_model = openai.Audio
+
+    def transcribe_audio(self,
+                         audio_path: Path,
+                         ) -> str:
+        """Given an audio file, return a transcription."""
+        with open(audio_path, "rb") as file:
+                # This is where an API call happens
+                transcription = self.whisper_model.transcribe(
+                                                file=file,
+                                                language=self.language,
+                                                model=self.whisper_model_name,
+                                                prompt=TRANSCRIPTION_PROMPT
+                                        )
+                if not self.local:
+                    logging.info("Made OpenAI Whisper API call with audio_file %s", audio_path.name)
+                else:
+                    logging.info("Made local Whisper call on %s with audio_file %s", self.device, audio_path.name)
+
+        return transcription["text"]
+
     def create_transcriptions(self,
                               audio_path: Path,
                               output_path: Path,
-                              language: str = "fr",
                               ) -> None:
         """Given an audio file, create a vocabulary list.
 
@@ -162,7 +185,7 @@ class VocabularyList:
             section_name = get_root_name(audio_file, self.strip_numbers)
 
             # This is where the API call is made
-            transcription = transcribe_audio(audio_file, language=language)
+            transcription = self.transcribe_audio(audio_file)
 
             # Save transcription
             transcription_file = transcription_path / (section_name + ".txt")
@@ -174,7 +197,6 @@ class VocabularyList:
     def create_vocab_lists(self,
                            audio_path: Path,
                            output_path: Path,
-                           language: str = "fr",
                            ) -> None:
         """Given an audio file, create a vocabulary list.
 
@@ -193,7 +215,7 @@ class VocabularyList:
             transcription_file = transcription_path / (section_name + ".txt")
             if not transcription_file.exists():
                 # Create transcription if it doesn't exist
-                self.create_transcriptions(audio_file, output_path, language=language)
+                self.create_transcriptions(audio_file, output_path)
 
             # Read transcription
             transcription: str = ""
