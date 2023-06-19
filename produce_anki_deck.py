@@ -223,7 +223,12 @@ class AnkiDeck:
         # Create deck for each vocabulary list
         for i, vocab_list_path in tqdm(enumerate(vocab_lists_all)):
             # Create a good name
-            chap_num = int(re.findall(r"\d+", vocab_list_path.stem)[0])
+            numbers = re.findall(r"\d+", vocab_list_path.stem)
+            if len(numbers) == 0:
+                # Resorting to using the index
+                chap_num = i
+            else:
+                chap_num = int(numbers[0])
             chap_title = chap_num if not chapter_titles else chapter_titles[chap_num]
             deck_name = self._generate_deck_name(chap_title, vocab_list_path.stem)
 
