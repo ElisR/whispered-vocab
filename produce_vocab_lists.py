@@ -6,6 +6,8 @@ import fire
 import openai
 import whisper
 import torch
+import pydub
+import tempfile
 
 logging.basicConfig(level=logging.INFO)
 
@@ -15,22 +17,46 @@ DEFAULT_WHISPER_MODEL = "medium"
 # TODO Change the prompt depending on the language.
 # Could even do this with the API itself
 PROMPT_START = (
-    """Hello, ChatGPT: you are now a helpful language learning expert, who has perfect knowledge of French. You are given the following list of words, which were transcribed from an audio CD accompanying a French vocabulary book.\n\n"""
-    """The below transcription may be imperfect, so any errors may be silently corrected. It is your job to turn the following transcription into a vocabulary list with French and English translations side by side, in a CSV format."""
+    """Hello, ChatGPT: you are now a helpful language learning expert, who has perfect knowledge of French. """
+    """You are given the following list of words, which were transcribed from an audio CD accompanying a French vocabulary book.\n\n"""
+    """The below transcription may be imperfect, so any errors may be silently corrected."""
+    """It is your job to turn the following transcription into a vocabulary list with French and English translations side by side, in a CSV format.\n\n"""
+)
+
+TIMED_EXAMPLE_INPUT_FR = (
+    """
+    ```
+    Le nom. [3.76 - 4.96]
+    Le nom de famille. [6.44 - 9.18]
+    Le prénom. [11.08 - 11.82]
+    S'appeler. [14.68 - 15.3]
+    ```
+    """
+)
+
+TIMED_EXAMPLE_OUTPUT_FR = (
+    """
+    ```
+    "French","English","start","end"
+    "le nom", "the name",3.76,4.96
+    "le nom de famille","the last name, family name",6.44,9.18
+    "le prénom","the first name",11.08,11.82
+    "s'appeler","to be called, to be named",14.68,15.3
+    ```
+    """
 )
 
 PROMPT_END = (
-    """When a masculine and feminine noun follow each other, they should be merged into one entry. Similarly, if a plural noun follows its singular version, they should both appear side-by-side in the same entry. All strings in the CSV should be escaped with `'`. Capitalise all proper nouns and valid grammatical sentences/questions, but otherwise leave the entries lowercase. For the valid grammatical sentences/questions, also punctuate them correctly.\n\n"""
-    """An example output for the input "Le nom. Le nom de famille. Le prénom. S'appeler." would be:
-    ```
-    "French","English"
-    "le nom", "the name"
-    "le nom de famille","the last name, family name"
-    "le prénom","the first name"
-    "s'appeler","to be called, to be named"
-    ```
-    Respond only in CSV format.
-    """
+    """For example, for the input"""
+    f"{TIMED_EXAMPLE_INPUT_FR}\n"
+    """would be:\n"""
+    f"{TIMED_EXAMPLE_OUTPUT_FR}\n\n"
+    """When a masculine and feminine nouns or adjectives follow each other, they should be merged into one entry."""
+    """Similarly, if a plural noun follows its singular version, they should both appear side-by-side in the same entry."""
+    """All strings in the CSV should be escaped with `"`."""
+    """Capitalise all proper nouns and valid grammatical sentences/questions, but otherwise leave the entries lowercase."""
+    """For the valid grammatical sentences/questions, also punctuate them correctly.\n\n"""
+    """Respond only in CSV format."""
 )
 
 # Prompt for imposing sensible punctuation output from Whisper
@@ -39,15 +65,31 @@ TRANSCRIPTION_PROMPT = (
 )
 
 
-def get_prompt(transcription: str):
-    """Given a transcription, return a prompt for ChatGPT to produce a vocabulary list."""
+def get_prompt(transcription: str) -> str:
+    """Given a transcription, return a prompt for ChatGPT to produce a vocabulary list.
+
+    Args:
+        transcription: Transcription of audio file.
+
+    Returns:
+        Prompt for ChatGPT to produce a vocabulary list.
+    """
     return PROMPT_START + "\n\n" + transcription + "\n\n" + PROMPT_END
 
 
 def create_vocab_list(transcription: str,
                       model: str,
                       section_name: str = "") -> str:
-    """Given a transcription, return a vocabulary list."""
+    """Given a transcription, return a vocabulary list using OpenAI API.
+    
+    Args:
+        transcription: Transcription of audio file.
+        model: OpenAI model to use.
+        section_name: Name of section to use in logging.
+        
+    Returns:
+        Vocabulary list produced by OpenAI API.
+    """
     prompt = get_prompt(transcription)
     logging.debug(prompt)
 
@@ -98,6 +140,77 @@ def get_root_name(audio_path: Path, strip_numbers: bool) -> str:
     return root_name
 
 
+def get_audio_without_start(audio_path: Path) -> tuple[pydub.AudioSegment, float]:
+    """Return audio without the first segment leading up to silence."""
+    audio = pydub.AudioSegment.from_mp3(audio_path)
+    first_10_seconds = audio[:10000]
+
+    # TODO Add customisable silence threshold
+    silences = pydub.silence.detect_silence(first_10_seconds, min_silence_len=600, silence_thresh=-40)
+    start_time = silences[0][1] - 300  # 300ms before the first silence
+    if len(silences) > 0:
+        audio = audio[start_time:]
+
+    return audio, (start_time / 1000)
+
+
+# TODO Add the full type hint
+def split_sentences(whisper_output: dict[list], offset: float = 0.0) -> list[dict[str, str | float]]:
+    """Split Whisper output into sentences with timestamps.
+
+    Args:
+        whisper_output: Output from Whisper API call when word-level timestamps are enabled.
+        offset: Offset to add to timestamps. (Useful if audio has been trimmed at the start.)
+    """
+    sentences = []
+    sentence_start = 0.0
+
+    for segment in whisper_output["segments"]:
+        word_list = segment["words"]
+
+        current_sentence = []
+
+        for word_dict in word_list:
+            word = word_dict["word"]
+            # Get start of segment
+            if len(current_sentence) == 0:
+                sentence_start = word_dict["start"]
+
+            # Adding word to current sentence
+            current_sentence.append(word)
+
+            # If word ends with punctuation, add sentence to list and reset current sentence
+            # TODO Add more robust regex matching for punctuation
+            # NOTE This causes a bug when Whisper doesn't output punctuation
+            if word.endswith(".") or word.endswith("?") or word.endswith("!"):
+                construct_sentence = "".join(current_sentence).strip()
+                sentences.append({
+                    "text": construct_sentence,
+                    "start": sentence_start + offset,
+                    "end": word_dict["end"] + offset,
+                })
+                current_sentence = []
+    return sentences
+
+
+def format_sentences(sentences: list[dict[str, str | float]]) -> str:
+    """Format sentences into a string along with timestamp."""
+    lines = []
+    for sentence in sentences:
+        lines.append(f"{sentence['text']} [{sentence['start']:.2f} - {sentence['end']:.2f}]")
+        # append line but with float rounded to 2 decimal places
+
+    return "\n".join(lines)
+
+
+def write_transcription(transcription: str, output_path: Path) -> None:
+    """Write transcription to file."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(transcription)
+        logging.info("Saved transcription to %s", output_path.name)
+
+
 class VocabularyList:
     """Class holding functions for generating Anki deck.
 
@@ -111,7 +224,7 @@ class VocabularyList:
                  strip_numbers: bool = False,
                  language: str = "fr",
                  local: bool = False,
-                 model: str = "gpt-3.5-turbo") -> None:
+                 model: str = DEFAULT_MODEL) -> None:
         """Initialise VocabularyList class.
 
         Args:
@@ -144,53 +257,82 @@ class VocabularyList:
                 self.whisper_model_name = "large"
             else:
                 self.whisper_model_name = DEFAULT_WHISPER_MODEL
+            logging.info("Using local '%s' Whisper model on device '%s'", self.whisper_model_name, self.device)
             self.whisper_model = whisper.load_model(self.whisper_model_name, device=self.device)
+            # NOTE Conditioning on previous text might be necessary for prompt to be followed
+            self.whisper_kwargs = {"condition_on_previous_text": False, "word_timestamps": True, "initial_prompt": TRANSCRIPTION_PROMPT}
         else:
             self.whisper_model_name = "whisper-1"
+            self.whisper_kwargs = {"model": self.whisper_model_name, "prompt": TRANSCRIPTION_PROMPT}
             self.whisper_model = openai.Audio
+        self.whisper_kwargs["language"] = self.language
 
     def transcribe_audio(self,
                          audio_path: Path,
-                         ) -> str:
+                         offset: float = 0.0,
+                         ) -> tuple[str, str]:
         """Given an audio file, return a transcription."""
-        with open(audio_path, "rb") as file:
+        if not self.local:
+            with open(audio_path, "rb") as file:
+                logging.info("Made OpenAI Whisper API call with audio_file %s", audio_path.name)
                 # This is where an API call happens
                 transcription = self.whisper_model.transcribe(
                                                 file=file,
-                                                language=self.language,
-                                                model=self.whisper_model_name,
-                                                prompt=TRANSCRIPTION_PROMPT
+                                                **self.whisper_kwargs,
                                         )
-                if not self.local:
-                    logging.info("Made OpenAI Whisper API call with audio_file %s", audio_path.name)
-                else:
-                    logging.info("Made local Whisper call on %s with audio_file %s", self.device, audio_path.name)
+                transcription_text = transcription["text"]
+                return transcription_text, transcription_text
+        else:
+            logging.info("Made local Whisper call on %s with audio file %s", self.device, audio_path.name)
 
-        return transcription["text"]
+            # TODO Sort failure when using local model on "02.1 Body Parts, Organs"
+            transcription = self.whisper_model.transcribe(
+                str(audio_path),
+                **self.whisper_kwargs,
+            )
+
+            # Keeping raw transcription in case punctuation is missing
+            transcription_text = transcription["text"]
+            logging.info("%s", transcription_text)
+
+            # Split into sentences with timestamps
+            sentences = split_sentences(transcription, offset=offset)
+            return transcription_text, format_sentences(sentences)
 
     def create_transcriptions(self,
                               audio_path: Path,
                               output_path: Path,
+                              no_split_start: bool = False,
+                              save_raw: bool = False,
                               ) -> None:
-        """Given an audio file, create a vocabulary list.
+        """Given an audio file, create a transcription with timestamps.
 
         Args:
             audio_path: Path to audio file or directory containing audio files.
             output_path: Path to output directory.
-            language: Language of audio file.
+            no_split_start: Whether to split audio file at start of each section. (Useful to remove confusing English.)
+            save_raw: Whether to save raw transcription.
         """
         transcription_path = Path(output_path) / "transcriptions"
         transcription_path.mkdir(parents=True, exist_ok=True)
         for audio_file in get_audio_list(Path(audio_path)):
-            section_name = get_root_name(audio_file, self.strip_numbers)
+            with tempfile.TemporaryDirectory() as temp_dir:
+                start_time = 0.0
+                # Create new file without start
+                if not no_split_start:
+                    audio_no_start, start_time = get_audio_without_start(audio_file)
+                    audio_file = Path(temp_dir) / audio_file.name
+                    audio_no_start.export(audio_file, format="mp3")
 
-            # This is where the API call is made
-            transcription = self.transcribe_audio(audio_file)
+                section_name = get_root_name(audio_file, self.strip_numbers)
 
-            # Save transcription
-            transcription_file = transcription_path / (section_name + ".txt")
-            with open(transcription_file, "w", encoding="utf-8") as f:
-                f.write(transcription)
+                # This is where the API call is made
+                transcription_raw, transcription_timestamped = self.transcribe_audio(audio_file, offset=start_time)
+
+                # Save transcription
+                write_transcription(transcription_timestamped, transcription_path / (section_name + ".txt"))
+                if save_raw:
+                    write_transcription(transcription_raw, transcription_path / "raw" / (section_name + ".txt"))
 
         logging.info("Finished transcribing audio files.")
 
