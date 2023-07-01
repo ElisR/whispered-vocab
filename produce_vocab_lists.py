@@ -8,9 +8,11 @@ import whisper
 import torch
 import pydub
 import tempfile
+from tqdm import tqdm
 
 logging.basicConfig(level=logging.INFO)
 
+AVAILABLE_MODELS = ["gpt-3.5-turbo", "gpt-4"]
 DEFAULT_MODEL = "gpt-3.5-turbo"
 DEFAULT_WHISPER_MODEL = "medium"
 
@@ -29,7 +31,7 @@ TIMED_EXAMPLE_INPUT_FR = (
     Le nom. [3.76 - 4.96]
     Le nom de famille. [6.44 - 9.18]
     Le prénom. [11.08 - 11.82]
-    S'appeler. [14.68 - 15.3]
+    S'appeler. [14.68 - 15.30]
     ```
     """
 )
@@ -41,7 +43,7 @@ TIMED_EXAMPLE_OUTPUT_FR = (
     "le nom", "the name",3.76,4.96
     "le nom de famille","the last name, family name",6.44,9.18
     "le prénom","the first name",11.08,11.82
-    "s'appeler","to be called, to be named",14.68,15.3
+    "s'appeler","to be called, to be named",14.68,15.30
     ```
     """
 )
@@ -64,6 +66,13 @@ TRANSCRIPTION_PROMPT = (
     """Le nom. Le nom de famille. Le prénom. S'appeler. Comment t'appelles-tu? Comment tu t'appelles? Monsieur. Messieurs. Madame. Mesdames. Madame Martin, née Dupont. Mademoiselle. Médemoiselle. Habiter quelque chose."""
 )
 
+# TODO Move this constant to a separate place
+DEFAULT_SILENCE_THRESHOLD = -40
+
+# Number of lines that fit into 4k context length GPT API call
+# TODO Tune this number
+MAX_LEN_4K = 90
+
 
 def get_prompt(transcription: str) -> str:
     """Given a transcription, return a prompt for ChatGPT to produce a vocabulary list.
@@ -81,15 +90,20 @@ def create_vocab_list(transcription: str,
                       model: str,
                       section_name: str = "") -> str:
     """Given a transcription, return a vocabulary list using OpenAI API.
-    
+
     Args:
         transcription: Transcription of audio file.
         model: OpenAI model to use.
         section_name: Name of section to use in logging.
-        
+
     Returns:
         Vocabulary list produced by OpenAI API.
     """
+    # Increasing context length if transcription is too long
+    if len(transcription.splitlines()) > MAX_LEN_4K and model == "gpt-3.5-turbo":
+        # NOTE This costs more than "gpt-3.5-turbo", but cheaper than splitting into multiple calls
+        model = "gpt-3.5-turbo-16k"
+
     prompt = get_prompt(transcription)
     logging.debug(prompt)
 
@@ -99,7 +113,7 @@ def create_vocab_list(transcription: str,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
     )
-    logging.info("Made OpenAI GPT-3 API call for section %s", section_name)
+    logging.info("Made OpenAI `%s` call for section %s", model, section_name)
     vocab_list = response["choices"][0]["message"]["content"]
     finish_reason = response["choices"][0]["finish_reason"]
     if finish_reason != "stop":
@@ -146,7 +160,7 @@ def get_audio_without_start(audio_path: Path) -> tuple[pydub.AudioSegment, float
     first_10_seconds = audio[:10000]
 
     # TODO Add customisable silence threshold
-    silences = pydub.silence.detect_silence(first_10_seconds, min_silence_len=600, silence_thresh=-40)
+    silences = pydub.silence.detect_silence(first_10_seconds, min_silence_len=600, silence_thresh=DEFAULT_SILENCE_THRESHOLD)
     start_time = silences[0][1] - 300  # 300ms before the first silence
     if len(silences) > 0:
         audio = audio[start_time:]
@@ -157,6 +171,8 @@ def get_audio_without_start(audio_path: Path) -> tuple[pydub.AudioSegment, float
 # TODO Add the full type hint
 def split_sentences(whisper_output: dict[list], offset: float = 0.0) -> list[dict[str, str | float]]:
     """Split Whisper output into sentences with timestamps.
+
+    TODO Fix this so it's not so dependent on punctuation.
 
     Args:
         whisper_output: Output from Whisper API call when word-level timestamps are enabled.
@@ -223,8 +239,9 @@ class VocabularyList:
                  api_key: str = None,
                  strip_numbers: bool = False,
                  language: str = "fr",
-                 local: bool = False,
-                 model: str = DEFAULT_MODEL) -> None:
+                 local: bool = True,
+                 model: str = DEFAULT_MODEL,
+                 save_raw: bool = False) -> None:
         """Initialise VocabularyList class.
 
         Args:
@@ -234,6 +251,7 @@ class VocabularyList:
             language: ISO code of target language.
             local: Whether to use local instance of Whisper instead of API.
             model: OpenAI model to use.
+            save_raw: Whether to save raw transcription from Whisper call without timestamps.
         """
         # Set API key
         if api_key_path is not None:
@@ -249,7 +267,8 @@ class VocabularyList:
 
         self.language = language
         self.local = local
-        if local:
+        self.save_raw = save_raw
+        if self.local:
             # TODO Add MPS support and selectable device
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
             if self.device == "cuda" and torch.cuda.mem_get_info()[0] > 10e9:
@@ -303,7 +322,6 @@ class VocabularyList:
                               audio_path: Path,
                               output_path: Path,
                               no_split_start: bool = False,
-                              save_raw: bool = False,
                               ) -> None:
         """Given an audio file, create a transcription with timestamps.
 
@@ -311,11 +329,10 @@ class VocabularyList:
             audio_path: Path to audio file or directory containing audio files.
             output_path: Path to output directory.
             no_split_start: Whether to split audio file at start of each section. (Useful to remove confusing English.)
-            save_raw: Whether to save raw transcription.
         """
         transcription_path = Path(output_path) / "transcriptions"
         transcription_path.mkdir(parents=True, exist_ok=True)
-        for audio_file in get_audio_list(Path(audio_path)):
+        for audio_file in tqdm(get_audio_list(Path(audio_path))):
             with tempfile.TemporaryDirectory() as temp_dir:
                 start_time = 0.0
                 # Create new file without start
@@ -331,7 +348,7 @@ class VocabularyList:
 
                 # Save transcription
                 write_transcription(transcription_timestamped, transcription_path / (section_name + ".txt"))
-                if save_raw:
+                if self.save_raw:
                     write_transcription(transcription_raw, transcription_path / "raw" / (section_name + ".txt"))
 
         logging.info("Finished transcribing audio files.")
@@ -349,8 +366,9 @@ class VocabularyList:
             output_path: Path to output directory.
             language: Language of audio file.
         """
+        output_path = Path(output_path)
         transcription_dict = {}
-        transcription_path = Path(output_path) / "transcriptions"
+        transcription_path = output_path / "transcriptions"
         for audio_file in get_audio_list(Path(audio_path)):
             # Check if transcription exists
             section_name = get_root_name(audio_file, self.strip_numbers)
@@ -369,7 +387,7 @@ class VocabularyList:
         for section_name, transcription in transcription_dict.items():
             vocab_list = create_vocab_list(transcription, self.model, section_name=section_name)
 
-            vocab_path = Path(output_path) / "vocab"
+            vocab_path = output_path / "vocab"
             vocab_path.mkdir(parents=True, exist_ok=True)
             with open(vocab_path / (section_name + ".csv"), "w", encoding="utf-8") as f:
                 f.write(vocab_list)
