@@ -25,13 +25,13 @@ python produce_anki_deck.py -h
 #### Converting `.mp3` Files to CSV of English / French Phrase Pairs
 
 ```shell
-python produce_vocab_lists.py create_vocab_lists --audio_path french_audio --output_path vocab_lists --language fr
+python produce_vocab_lists.py create_vocab_lists --audio_path french_audio --output_path vocab_lists --language fr --api_key_path api_key.txt
 ```
 
 #### Converting `.csv` of English / French Phrase Pairs into an Anki Flashcard Package
 
 ```shell
-python produce_anki_deck.py create_anki_decks --vocab_path vocab_lists/vocab --output_path vocab_lists/packages --chapter_path data/chapters.csv --use_audio False
+python produce_anki_deck.py create_anki_decks --vocab_path vocab_lists/vocab --output_path vocab_lists/packages --chapter_path data/chapters.csv --audio_dir french_audio
 ```
 
 ### Practical Aspects
